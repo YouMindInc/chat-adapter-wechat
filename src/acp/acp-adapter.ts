@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import type {
   AdapterPostableMessage,
   ChatInstance,
@@ -139,6 +140,8 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
   private pollingActive = false;
   private pollingAbortController: AbortController | null = null;
   private pollingTask: Promise<void> | null = null;
+  private pollingTimer: ReturnType<typeof setTimeout> | null = null;
+  private consecutivePollingFailures = 0;
   private drainPromise: Promise<void> | null = null;
   /**
    * Set by `disconnect()` to interrupt long-running loops promptly. The
@@ -252,6 +255,10 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
     this.logger.info("Disconnecting adapter", { botId: this.botId });
     this.isShutdown = true;
     this.pollingActive = false;
+    if (this.pollingTimer) {
+      clearTimeout(this.pollingTimer);
+      this.pollingTimer = null;
+    }
     this.pollingAbortController?.abort();
     // Cancel any in-flight QR login sessions so a stuck scan worker
     // doesn't keep us in disconnect() until iLink times out the
@@ -268,6 +275,8 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
     if (this.pollingTask) {
       await this.pollingTask.catch(() => {});
     }
+    this.pollingAbortController = null;
+    this.pollingTask = null;
     if (this.drainPromise) {
       await this.drainPromise.catch(() => {});
     }
@@ -453,79 +462,112 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
     if (this.pollingActive) return;
     this.pollingActive = true;
     this.pollingAbortController = new AbortController();
-
-    this.pollingTask = this.pollingLoop().finally(() => {
-      this.pollingActive = false;
-      this.pollingAbortController = null;
-      this.pollingTask = null;
+    this.consecutivePollingFailures = 0;
+    this.logger.info("Polling started", {
+      botId: this.botId,
+      pollIntervalMs: this.config.pollIntervalMs,
     });
+    this.scheduleNextPoll(0);
   }
 
-  private async pollingLoop(): Promise<void> {
-    let consecutiveFailures = 0;
-    this.logger.info("Polling loop started", { botId: this.botId, pollIntervalMs: this.config.pollIntervalMs });
+  private scheduleNextPoll(delayMs: number): void {
+    if (!this.pollingActive) return;
+    if (this.pollingTimer) clearTimeout(this.pollingTimer);
+    this.pollingTimer = setTimeout(() => {
+      this.pollingTimer = null;
+      this.runPollAttempt();
+    }, Math.max(0, delayMs));
+  }
 
-    while (this.pollingActive) {
-      try {
-        const response = await this.client.getUpdates(
-          this.pollState.updatesBuf,
-          this.config.pollIntervalMs,
-          this.pollingAbortController?.signal
+  private runPollAttempt(): void {
+    if (!this.pollingActive || this.pollingTask) return;
+
+    const task = this.pollOnce().finally(() => {
+      if (this.pollingTask === task) {
+        this.pollingTask = null;
+      }
+    });
+    this.pollingTask = task;
+    void task;
+  }
+
+  private async pollOnce(): Promise<void> {
+    const pollStartedAt = Date.now();
+    try {
+      const response = await this.client.getUpdates(
+        this.pollState.updatesBuf,
+        this.pollingAbortController?.signal
+      );
+      const messages = response.msgs ?? [];
+      const hasMessages = messages.length > 0;
+      if (hasMessages) {
+        this.logger.info("Poll received messages", {
+          botId: this.botId,
+          count: messages.length,
+        });
+      }
+
+      await this.handlePollResponse(response);
+
+      this.consecutivePollingFailures = 0;
+      if (this.pollingActive) {
+        const elapsedMs = Date.now() - pollStartedAt;
+        this.scheduleNextPoll(
+          hasMessages
+            ? 0
+            : Math.max(0, this.config.pollIntervalMs - elapsedMs)
         );
-        if (response.msgs?.length) {
-          this.logger.info("Poll received messages", { botId: this.botId, count: response.msgs.length });
-        }
+      }
+    } catch (error) {
+      if (!this.pollingActive) return;
 
-        await this.handlePollResponse(response);
-
-        consecutiveFailures = 0;
-      } catch (error) {
-        if (!this.pollingActive) return;
-
-        // On auth failure, prefer the caller's onAuthFailure hook (for
-        // headless workers that need to hand off to a separate scan
-        // process). Fall back to the legacy in-process re-login when no
-        // hook is configured, to preserve interactive single-process
-        // deployments.
-        if (error instanceof AuthenticationError) {
-          if (this.config.onAuthFailure) {
-            this.logger.warn(
-              "Auth token invalid; invoking onAuthFailure and stopping polling",
-              { botId: this.botId }
-            );
-            try {
-              await this.config.onAuthFailure({
-                botId: this.botId,
-                metadata: this.metadata,
-              });
-            } catch (hookError) {
-              this.logger.error("onAuthFailure callback threw", {
-                error: hookError,
-              });
-            }
-            this.pollingActive = false;
-            return;
-          }
-          this.logger.warn("Auth token invalid, attempting re-login...");
+      // On auth failure, prefer the caller's onAuthFailure hook (for
+      // headless workers that need to hand off to a separate scan
+      // process). Fall back to the legacy in-process re-login when no
+      // hook is configured, to preserve interactive single-process
+      // deployments.
+      if (error instanceof AuthenticationError) {
+        if (this.config.onAuthFailure) {
+          this.logger.warn(
+            "Auth token invalid; invoking onAuthFailure and stopping polling",
+            { botId: this.botId }
+          );
           try {
-            await this.loginWithQr();
-            consecutiveFailures = 0;
-            continue;
-          } catch (reLoginError) {
-            this.logger.error("Re-login failed", {
-              error: reLoginError,
+            await this.config.onAuthFailure({
+              botId: this.botId,
+              metadata: this.metadata,
+            });
+          } catch (hookError) {
+            this.logger.error("onAuthFailure callback threw", {
+              error: hookError,
             });
           }
+          this.pollingActive = false;
+          return;
         }
-
-        consecutiveFailures++;
-        const backoffMs = Math.min(1000 * 2 ** consecutiveFailures, 60_000);
-        this.logger.warn(`Polling error (retry in ${backoffMs}ms)`, {
-          error,
-          failures: consecutiveFailures,
-        });
-        await new Promise((r) => setTimeout(r, backoffMs));
+        this.logger.warn("Auth token invalid, attempting re-login...");
+        try {
+          await this.loginWithQr();
+          this.consecutivePollingFailures = 0;
+          this.scheduleNextPoll(0);
+          return;
+        } catch (reLoginError) {
+          this.logger.error("Re-login failed", {
+            error: reLoginError,
+          });
+        }
       }
+
+      this.consecutivePollingFailures++;
+      const backoffMs = Math.min(
+        1000 * 2 ** this.consecutivePollingFailures,
+        60_000
+      );
+      this.logger.warn(`Polling error (retry in ${backoffMs}ms)`, {
+        error,
+        failures: this.consecutivePollingFailures,
+      });
+      this.scheduleNextPoll(backoffMs);
     }
   }
 
@@ -965,7 +1007,7 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
             `CDN upload attempt ${attempt} failed, retrying in ${backoffMs}ms`,
             { error }
           );
-          await new Promise((r) => setTimeout(r, backoffMs));
+          await sleep(backoffMs);
         }
       }
     }

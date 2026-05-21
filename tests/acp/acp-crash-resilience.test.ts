@@ -539,8 +539,8 @@ describe("ACP crash resilience", () => {
     (adapter as unknown as { loginWithQr: typeof loginSpy }).loginWithQr =
       loginSpy;
 
-    // Drive pollingLoop directly: mark active, give it an abort controller
-    // and a fake chat, and let it run one iteration.
+    // Drive one polling attempt directly: mark active, give it an abort
+    // controller and a fake chat.
     (adapter as unknown as { pollingActive: boolean }).pollingActive = true;
     (adapter as unknown as {
       pollingAbortController: AbortController | null;
@@ -550,8 +550,8 @@ describe("ACP crash resilience", () => {
     (adapter as unknown as { chat: ChatInstance }).chat = chat;
 
     await (adapter as unknown as {
-      pollingLoop: () => Promise<void>;
-    }).pollingLoop();
+      pollOnce: () => Promise<void>;
+    }).pollOnce();
 
     expect(onAuthFailure).toHaveBeenCalledTimes(1);
     expect(onAuthFailure).toHaveBeenCalledWith({ botId: "headless" });
@@ -559,6 +559,79 @@ describe("ACP crash resilience", () => {
     expect(
       (adapter as unknown as { pollingActive: boolean }).pollingActive
     ).toBe(false);
+  });
+
+  it("uses pollIntervalMs only to throttle empty getupdates polls", async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createWeChatAcpAdapter({
+        baseUrl: "https://test.example",
+        pollIntervalMs: 1000,
+        stateStorage: {
+          load: async () => null,
+          save: async () => {},
+        },
+      });
+      const state = createInMemoryState();
+      const { chat } = createFakeChat(state);
+
+      (adapter as unknown as { chat: ChatInstance }).chat = chat;
+      (adapter as unknown as {
+        pollState: {
+          updatesBuf: string;
+          contextTokens: Record<string, string>;
+          lastMessageId: number;
+        };
+      }).pollState = {
+        updatesBuf: "",
+        contextTokens: {},
+        lastMessageId: 0,
+      };
+      (adapter as unknown as { pollingActive: boolean }).pollingActive = true;
+      (adapter as unknown as {
+        pollingAbortController: AbortController | null;
+      }).pollingAbortController = new AbortController();
+      (adapter as unknown as {
+        handlePollResponse: (response: unknown) => Promise<void>;
+      }).handlePollResponse = vi.fn(async () => {});
+
+      const getUpdates = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ret: 0,
+          msgs: [makeIlinkMessage(1)],
+          get_updates_buf: "cursor_1",
+        })
+        .mockResolvedValueOnce({ ret: 0, msgs: [] })
+        .mockImplementationOnce(async () => {
+          (adapter as unknown as { pollingActive: boolean }).pollingActive =
+            false;
+          return { ret: 0, msgs: [] };
+        });
+      (adapter as unknown as { client: unknown }).client = {
+        getUpdates,
+        setToken: () => {},
+      };
+
+      await (adapter as unknown as {
+        pollOnce: () => Promise<void>;
+      }).pollOnce();
+
+      expect(getUpdates).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getUpdates).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(getUpdates).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(getUpdates).toHaveBeenCalledTimes(3);
+      expect(typeof getUpdates.mock.calls[0]![1]).not.toBe("number");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("surfaces caller-supplied metadata on the adapter and in callback contexts", async () => {
@@ -622,8 +695,8 @@ describe("ACP crash resilience", () => {
     const { chat } = createFakeChat(state);
     (adapter as unknown as { chat: ChatInstance }).chat = chat;
     await (adapter as unknown as {
-      pollingLoop: () => Promise<void>;
-    }).pollingLoop();
+      pollOnce: () => Promise<void>;
+    }).pollOnce();
     expect(onAuthFailure).toHaveBeenCalledTimes(1);
     expect(onAuthFailure.mock.calls[0]![0]).toEqual({
       botId: "sales",
