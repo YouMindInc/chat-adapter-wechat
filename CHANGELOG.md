@@ -1,5 +1,11 @@
 # chat-adapter-wechat
 
+## 0.3.3
+
+### Patch Changes
+
+- [#8](https://github.com/sang4lv/chat-adapter-wechat/pull/8) [`3201dc5`](https://github.com/sang4lv/chat-adapter-wechat/commit/3201dc5d912c482f1af8fe2a2af985f23a6de4a5) Thanks [@sang4lv](https://github.com/sang4lv)! - Fix ACP polling interval handling so `pollIntervalMs` throttles empty `getupdates` responses instead of being used as the HTTP request timeout. Non-empty responses are polled again immediately so incoming backlogs can drain without an artificial delay, while `getupdates` keeps a dedicated long-poll request timeout above the server hold window.
+
 ## 0.3.2
 
 ### Patch Changes
