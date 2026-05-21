@@ -384,7 +384,7 @@ All options are optional — defaults are shown below.
 | `botId` | `string` | — | Optional logical bot identifier for multi-bot gateways. Drives `name`, pending-queue partition, default `dataDir`. (see [Multi-bot gateway](#multi-bot-gateway)) |
 | `metadata` | `Record<string, unknown>` | — | Opaque caller-supplied data attached to this adapter. Surfaced via `onQrCode` / `onAuthFailure` callback contexts and as `adapter.metadata`. The adapter never reads it. |
 | `dataDir` | `string` | `~/.chat-adapter-wechat` (or `~/.chat-adapter-wechat/<botId>` when `botId` is set) | Directory for token and state persistence |
-| `pollIntervalMs` | `number` | `25000` | Polling interval in milliseconds |
+| `pollIntervalMs` | `number` | `25000` | Delay before retrying after an empty `getupdates` response |
 | `typingIntervalMs` | `number` | `15000` | Typing indicator heartbeat in milliseconds |
 | `baseUrl` | `string` | `https://ilinkai.weixin.qq.com` | ilink API base URL |
 | `cdnBaseUrl` | `string` | `https://novac2c.cdn.weixin.qq.com/c2c` | CDN base URL for media |

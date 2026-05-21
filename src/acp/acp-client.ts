@@ -6,6 +6,7 @@ import {
 } from "@chat-adapter/shared";
 import {
   DEFAULT_API_TIMEOUT_MS,
+  GETUPDATES_LONG_POLL_TIMEOUT_MS,
   QR_LONG_POLL_TIMEOUT_MS,
   CHANNEL_VERSION,
   BOT_TYPE,
@@ -150,14 +151,13 @@ export class IlinkClient {
 
   async getUpdates(
     updatesBuf: string,
-    timeoutMs: number,
     signal?: AbortSignal
   ): Promise<IlinkGetUpdatesResponse> {
     try {
       return await this.post<IlinkGetUpdatesResponse>(
         "ilink/bot/getupdates",
         { get_updates_buf: updatesBuf },
-        timeoutMs + 5_000,
+        GETUPDATES_LONG_POLL_TIMEOUT_MS,
         signal
       );
     } catch (error) {

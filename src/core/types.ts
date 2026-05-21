@@ -134,6 +134,8 @@ export const DEFAULT_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 export const DEFAULT_POLL_INTERVAL_MS = 25_000;
 export const DEFAULT_TYPING_INTERVAL_MS = 15_000;
 export const DEFAULT_API_TIMEOUT_MS = 15_000;
+export const GETUPDATES_LONG_POLL_TIMEOUT_MS =
+  DEFAULT_POLL_INTERVAL_MS + 5_000;
 export const QR_LONG_POLL_TIMEOUT_MS = 35_000;
 export const CHANNEL_VERSION = "1.0.2";
 export const BOT_TYPE = "3";

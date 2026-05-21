@@ -54,7 +54,7 @@ describe("IlinkClient with mocked fetch", () => {
 
       mockFetch.mockResolvedValueOnce(mockResponse(responseBody));
 
-      const result = await client.getUpdates("", 25000);
+      const result = await client.getUpdates("");
 
       expect(mockFetch).toHaveBeenCalledOnce();
       const [url, options] = mockFetch.mock.calls[0]!;
@@ -81,10 +81,47 @@ describe("IlinkClient with mocked fetch", () => {
         mockResponse({ ret: 0, msgs: [], get_updates_buf: "cursor_456" })
       );
 
-      await client.getUpdates("cursor_123", 25000);
+      await client.getUpdates("cursor_123");
 
       const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
       expect(body.get_updates_buf).toBe("cursor_123");
+    });
+
+    it("keeps the client timeout above the server long-poll hold window", async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new IlinkClient({
+          baseUrl: "https://ilinkai.weixin.qq.com",
+          cdnBaseUrl: "https://novac2c.cdn.weixin.qq.com/c2c",
+          token: "test-token",
+        });
+
+        let requestSignal: AbortSignal | undefined;
+        mockFetch.mockImplementationOnce((_url, options) => {
+          requestSignal = options.signal;
+          return new Promise((_resolve, reject) => {
+            requestSignal!.addEventListener("abort", () => {
+              reject(
+                Object.assign(new Error("aborted"), { name: "AbortError" })
+              );
+            });
+          });
+        });
+
+        const result = client.getUpdates("cursor_123");
+
+        await vi.advanceTimersByTimeAsync(25_000);
+        expect(requestSignal?.aborted).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(5_000);
+        await expect(result).resolves.toEqual({
+          ret: 0,
+          msgs: [],
+          get_updates_buf: "cursor_123",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -383,7 +420,7 @@ describe("IlinkClient with mocked fetch", () => {
         Object.assign(new Error("aborted"), { name: "AbortError" })
       );
 
-      const result = await client.getUpdates("cursor_1", 1000);
+      const result = await client.getUpdates("cursor_1");
       expect(result.ret).toBe(0);
       expect(result.msgs).toEqual([]);
       expect(result.get_updates_buf).toBe("cursor_1");
