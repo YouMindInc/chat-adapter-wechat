@@ -52,7 +52,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/YouMindInc/chat-adapter-wechat.git"
+    "url": "https://github.com/sang4lv/chat-adapter-wechat.git"
   },
   "license": "MIT",
   "packageManager": "pnpm@10.12.4"
