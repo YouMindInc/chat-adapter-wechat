@@ -40,6 +40,29 @@ export interface SendMessageParams {
   }>;
 }
 
+export interface SendMessageResult {
+  retriedWithoutContextToken: boolean;
+}
+
+class IlinkBusinessError extends NetworkError {
+  readonly endpoint: string;
+  readonly ret?: number;
+  readonly errcode?: number;
+  readonly errmsg?: string;
+
+  constructor(
+    endpoint: string,
+    details: { ret?: number; errcode?: number; errmsg?: string }
+  ) {
+    super("wechat-acp", `${endpoint} failed`);
+    this.name = "IlinkBusinessError";
+    this.endpoint = endpoint;
+    this.ret = details.ret;
+    this.errcode = details.errcode;
+    this.errmsg = details.errmsg;
+  }
+}
+
 export class IlinkClient {
   private baseUrl: string;
   private cdnBaseUrl: string;
@@ -119,11 +142,28 @@ export class IlinkClient {
           `${endpoint} ${response.status}: ${text}`
         );
       }
-      const parsed = JSON.parse(text) as T & { ret?: number; errcode?: number };
+      const parsed = JSON.parse(text) as T & {
+        ret?: number;
+        errcode?: number;
+        errmsg?: string;
+      };
       // Check ilink-level error codes
       if (parsed.errcode === 210205 || parsed.ret === 210205) {
         this.logger?.warn("iLink rate limit hit", { endpoint });
         throw new AdapterRateLimitError("wechat-acp");
+      }
+      if (isIlinkBusinessFailure(parsed)) {
+        this.logger?.warn("iLink API returned business error", {
+          endpoint,
+          ret: parsed.ret,
+          errcode: parsed.errcode,
+          errmsg: sanitizeIlinkMessage(parsed.errmsg),
+        });
+        throw new IlinkBusinessError(endpoint, {
+          ret: parsed.ret,
+          errcode: parsed.errcode,
+          errmsg: parsed.errmsg,
+        });
       }
       return parsed;
     } catch (error) {
@@ -209,9 +249,53 @@ export class IlinkClient {
     };
   }
 
-  async sendMessage(params: SendMessageParams): Promise<void> {
+  async sendMessage(params: SendMessageParams): Promise<SendMessageResult> {
     const body = this.buildSendMessageBody(params);
-    await this.post("ilink/bot/sendmessage", body);
+    try {
+      const response = await this.post<{ ret?: number; errcode?: number }>(
+        "ilink/bot/sendmessage",
+        body
+      );
+      this.logger?.info("iLink sendMessage succeeded", {
+        endpoint: "ilink/bot/sendmessage",
+        toUserId: params.toUserId,
+        ret: response.ret,
+        errcode: response.errcode,
+        contextTokenUsed: Boolean(params.contextToken),
+        retriedWithoutContextToken: false,
+      });
+      return { retriedWithoutContextToken: false };
+    } catch (error) {
+      if (
+        params.contextToken &&
+        error instanceof IlinkBusinessError &&
+        isStaleContextTokenError(error)
+      ) {
+        this.logger?.warn(
+          "iLink sendMessage context token appears stale; retrying without it",
+          {
+            endpoint: error.endpoint,
+            ret: error.ret,
+            errcode: error.errcode,
+            errmsg: sanitizeIlinkMessage(error.errmsg),
+          }
+        );
+        const response = await this.post<{ ret?: number; errcode?: number }>(
+          "ilink/bot/sendmessage",
+          this.buildSendMessageBody({ ...params, contextToken: undefined })
+        );
+        this.logger?.info("iLink sendMessage succeeded", {
+          endpoint: "ilink/bot/sendmessage",
+          toUserId: params.toUserId,
+          ret: response.ret,
+          errcode: response.errcode,
+          contextTokenUsed: false,
+          retriedWithoutContextToken: true,
+        });
+        return { retriedWithoutContextToken: true };
+      }
+      throw error;
+    }
   }
 
   // --- Typing ---
@@ -369,4 +453,31 @@ export class IlinkClient {
     }
     return Buffer.from(await response.arrayBuffer());
   }
+}
+
+function isIlinkBusinessFailure(response: {
+  ret?: number;
+  errcode?: number;
+}): boolean {
+  return (
+    (response.ret != null && response.ret !== 0) ||
+    (response.errcode != null && response.errcode !== 0)
+  );
+}
+
+function isStaleContextTokenError(error: IlinkBusinessError): boolean {
+  if (error.ret !== -2) return false;
+  const errmsg = String(error.errmsg ?? "").trim().toLowerCase();
+  return (
+    errmsg === "" ||
+    errmsg === "unknown" ||
+    errmsg === "null" ||
+    errmsg.includes("context_token") ||
+    errmsg.includes("context token")
+  );
+}
+
+function sanitizeIlinkMessage(message: string | undefined): string | undefined {
+  if (message == null) return undefined;
+  return message.slice(0, 200);
 }
