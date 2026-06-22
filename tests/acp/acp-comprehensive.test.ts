@@ -230,6 +230,142 @@ describe("error handling", () => {
       client.sendMessage({ toUserId: "u", text: "hi", contextToken: "c" })
     ).rejects.toThrow("Rate limit");
   });
+
+  it("throws on non-zero ilink business response codes", async () => {
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const client = new IlinkClient({
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      cdnBaseUrl: "https://novac2c.cdn.weixin.qq.com/c2c",
+      token: "test",
+      logger,
+    });
+
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ret: -3, errmsg: "send failed" }), {
+        status: 200,
+      })
+    );
+
+    await expect(
+      client.sendMessage({ toUserId: "u", text: "hi", contextToken: "c" })
+    ).rejects.toThrow("ilink/bot/sendmessage failed");
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "iLink API returned business error",
+      {
+        endpoint: "ilink/bot/sendmessage",
+        errcode: undefined,
+        errmsg: "send failed",
+        ret: -3,
+      }
+    );
+  });
+
+  it("retries sendMessage once without context token for stale-token response", async () => {
+    const client = new IlinkClient({
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      cdnBaseUrl: "https://novac2c.cdn.weixin.qq.com/c2c",
+      token: "test",
+    });
+
+    mockFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ret: -2, errmsg: "unknown" }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ret: 0 }), { status: 200 })
+      );
+
+    const result = await client.sendMessage({
+      toUserId: "u",
+      text: "hi",
+      contextToken: "stale-context-token",
+    });
+
+    expect(result).toEqual({ retriedWithoutContextToken: true });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+    const retryBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
+    expect(firstBody.msg.context_token).toBe("stale-context-token");
+    expect(retryBody.msg.context_token).toBe("");
+  });
+
+  it("throws when stale-token retry also fails", async () => {
+    const client = new IlinkClient({
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      cdnBaseUrl: "https://novac2c.cdn.weixin.qq.com/c2c",
+      token: "test",
+    });
+
+    mockFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ret: -2, errmsg: "" }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ret: -4, errmsg: "retry failed" }), {
+          status: 200,
+        })
+      );
+
+    await expect(
+      client.sendMessage({
+        toUserId: "u",
+        text: "hi",
+        contextToken: "stale-context-token",
+      })
+    ).rejects.toThrow("ilink/bot/sendmessage failed");
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// --- Outbound Send State Tests ---
+
+describe("outbound send state", () => {
+  it("drops cached context token after tokenless sendMessage retry succeeds", async () => {
+    const saveState = vi.fn();
+    const adapter = createWeChatAcpAdapter({
+      baseUrl: "https://test.example.com",
+      stateStorage: {
+        load: vi.fn(),
+        save: saveState,
+      },
+    });
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValue({ retriedWithoutContextToken: true });
+
+    (adapter as any).client = { sendMessage };
+    (adapter as any).pollState = {
+      updatesBuf: "",
+      contextTokens: { user1: "stale-context-token" },
+      lastMessageId: 0,
+    };
+
+    const result = await adapter.postMessage("wechat:dm:user1", "hello");
+
+    expect(sendMessage).toHaveBeenCalledWith({
+      toUserId: "user1",
+      text: "hello",
+      contextToken: "stale-context-token",
+      images: undefined,
+    });
+    expect((adapter as any).pollState.contextTokens).toEqual({});
+    expect(saveState).toHaveBeenCalledWith({
+      updatesBuf: "",
+      contextTokens: {},
+      lastMessageId: 0,
+    });
+    expect(result.raw.contextToken).toBe("");
+  });
 });
 
 // --- Message Parsing Edge Cases (§6) ---

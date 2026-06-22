@@ -1,5 +1,11 @@
 # chat-adapter-wechat
 
+## 0.3.4
+
+### Patch Changes
+
+- Treat non-zero iLink business response codes as send failures, retry stale `context_token` sends once without the token, and log sanitized final-hop response metadata for `sendMessage`.
+
 ## 0.3.3
 
 ### Patch Changes

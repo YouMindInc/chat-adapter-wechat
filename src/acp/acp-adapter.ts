@@ -869,12 +869,21 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
       hasText: Boolean(text),
       imageCount: imageUploads.length,
     });
-    await this.client.sendMessage({
+    const sendResult = await this.client.sendMessage({
       toUserId: conversationId,
       text: text || undefined,
       contextToken: ctx,
       images: imageUploads.length > 0 ? imageUploads : undefined,
     });
+    const sentContextToken = sendResult.retriedWithoutContextToken ? "" : ctx;
+    if (sendResult.retriedWithoutContextToken) {
+      delete this.pollState.contextTokens[conversationId];
+      await this.savePollState();
+      this.logger.warn("Dropped stale iLink context token after send retry", {
+        toUserId: conversationId,
+        threadType: decoded.type,
+      });
+    }
 
     const messageId = Date.now();
     const rawMessage: WeChatRawMessage = {
@@ -884,7 +893,7 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
       groupId: decoded.type === "group" ? conversationId : undefined,
       text,
       createTime: Date.now(),
-      contextToken: ctx,
+      contextToken: sentContextToken,
       media: [],
       raw: {},
     };

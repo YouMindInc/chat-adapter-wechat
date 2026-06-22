@@ -1,6 +1,6 @@
 {
   "name": "chat-adapter-wechat",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "WeChat adapter for the Vercel Chat SDK",
   "type": "module",
   "main": "./dist/index.js",
@@ -52,7 +52,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/sang4lv/chat-adapter-wechat.git"
+    "url": "https://github.com/YouMindInc/chat-adapter-wechat.git"
   },
   "license": "MIT",
   "packageManager": "pnpm@10.12.4"
