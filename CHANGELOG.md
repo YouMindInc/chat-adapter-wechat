@@ -1,5 +1,11 @@
 # chat-adapter-wechat
 
+## 0.3.6
+
+### Patch Changes
+
+- [#15](https://github.com/YouMindInc/chat-adapter-wechat/pull/15) [`bf55faa`](https://github.com/YouMindInc/chat-adapter-wechat/commit/bf55faa1c169a38b75ad331ff4dbd6469f620576) Thanks [@cjl99](https://github.com/cjl99)! - 将使用方媒体补丁收回 ACP 源码：支持视频和文件附件发送、60 秒媒体上传超时、上传失败阶段标记，并修正停止 typing 的状态值。保留图片上传与轮询 signal 内存修复，使使用方升级后可以删除本地媒体 patch。
+
 ## 0.3.5
 
 ### Patch Changes
