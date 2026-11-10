@@ -38,7 +38,13 @@ import {
   generateFileKey,
 } from "../core/media.js";
 import { IlinkClient } from "./acp-client.js";
-import { MessageType, MessageItemType } from "./acp-types.js";
+import type { UploadedMedia, UploadedAttachment } from "./acp-client.js";
+import {
+  MessageType,
+  MessageItemType,
+  UploadMediaType,
+  TypingStatus,
+} from "./acp-types.js";
 import type {
   AccountData,
   PollState,
@@ -63,6 +69,7 @@ const PENDING_QUEUE_KEY_PREFIX = "wechat-acp:pending";
 const PENDING_QUEUE_MAX_SIZE = 1000;
 /** TTL for entries in the durable pending queue (24h). */
 const PENDING_QUEUE_TTL_MS = 24 * 60 * 60 * 1000;
+const MEDIA_UPLOAD_TIMEOUT_MS = 60_000;
 /**
  * A QR-login session in progress. Returned by `startQrLogin()` so the
  * caller can deliver the QR image immediately and await — or hand off —
@@ -838,28 +845,49 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
       ? cardToFallbackText(card)
       : this.formatConverter.renderPostable(message);
 
-    // Extract and upload image attachments
+    // 图片、视频和文件共用加密上传过程，消息 item 在发送时分别组装。
     const files = extractFiles(message);
-    const imageUploads: Array<{
-      encryptQueryParam: string;
-      aesKeyB64: string;
-      ciphertextSize: number;
-    }> = [];
+    const imageUploads: UploadedMedia[] = [];
+    const mediaUploads: UploadedAttachment[] = [];
 
     for (const file of files) {
       const isImage =
         file.mimeType?.startsWith("image/") ||
         file.filename?.match(/\.(jpg|jpeg|png|gif|webp)$/i);
-      if (isImage) {
-        const buf = Buffer.isBuffer(file.data)
-          ? file.data
-          : Buffer.from(
-              file.data instanceof ArrayBuffer
-                ? file.data
-                : await new Response(file.data as Blob).arrayBuffer()
-            );
-        const uploaded = await this.uploadImage(conversationId, buf);
-        imageUploads.push(uploaded);
+      const buf = Buffer.isBuffer(file.data)
+        ? file.data
+        : Buffer.from(
+            file.data instanceof ArrayBuffer
+              ? file.data
+              : await new Response(file.data as Blob).arrayBuffer()
+          );
+      try {
+        if (isImage) {
+          imageUploads.push(await this.uploadImage(conversationId, buf));
+        } else if (file.mimeType?.startsWith("video/")) {
+          const uploaded = await this.uploadMedia(
+            conversationId, buf, UploadMediaType.VIDEO,
+          );
+          mediaUploads.push({ ...uploaded, type: "video" });
+        } else {
+          const uploaded = await this.uploadMedia(
+            conversationId, buf, UploadMediaType.FILE,
+          );
+          mediaUploads.push({
+            ...uploaded,
+            type: "file",
+            filename: file.filename || "file",
+            rawSize: buf.length,
+          });
+        }
+      } catch (cause) {
+        // 保留使用方辨别“上传失败、尚未发送”的兼容标记。
+        throw Object.assign(
+          cause instanceof Error
+            ? cause
+            : new Error("WeChat media preparation failed before sendMessage", { cause }),
+          { wechatDeliveryStage: "upload" },
+        );
       }
     }
 
@@ -874,6 +902,7 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
       text: text || undefined,
       contextToken: ctx,
       images: imageUploads.length > 0 ? imageUploads : undefined,
+      ...(mediaUploads.length > 0 ? { media: mediaUploads } : {}),
     });
     const sentContextToken = sendResult.retriedWithoutContextToken ? "" : ctx;
     if (sendResult.retriedWithoutContextToken) {
@@ -915,7 +944,7 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
 
       const config = await this.client.getConfig(conversationId, ctx);
       if (config.typing_ticket) {
-        await this.client.sendTyping(conversationId, config.typing_ticket, 1);
+        await this.client.sendTyping(conversationId, config.typing_ticket, TypingStatus.START);
       }
     } catch (error) {
       // Typing is best-effort; log so transient issues are diagnosable
@@ -931,7 +960,7 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
 
       const config = await this.client.getConfig(conversationId, ctx);
       if (config.typing_ticket) {
-        await this.client.sendTyping(conversationId, config.typing_ticket, 0);
+        await this.client.sendTyping(conversationId, config.typing_ticket, TypingStatus.STOP);
       }
     } catch (error) {
       this.logger.warn("Stop typing indicator failed", { error });
@@ -949,20 +978,24 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
   async uploadImage(
     toUserId: string,
     imageData: Buffer
-  ): Promise<{
-    encryptQueryParam: string;
-    aesKeyB64: string;
-    ciphertextSize: number;
-  }> {
-    this.logger.info("Uploading image to CDN", {
+  ): Promise<UploadedMedia> {
+    return this.uploadMedia(toUserId, imageData, UploadMediaType.IMAGE);
+  }
+
+  private async uploadMedia(
+    toUserId: string,
+    data: Buffer,
+    mediaType: number,
+  ): Promise<UploadedMedia> {
+    this.logger.info("Uploading media to CDN", {
       toUserId,
-      rawSize: imageData.length,
+      rawSize: data.length,
     });
     const aesKey = crypto.randomBytes(16);
     const aesKeyHex = aesKey.toString("hex");
-    const rawSize = imageData.length;
-    const rawMd5 = fileMd5(imageData);
-    const encrypted = aesEcbEncrypt(imageData, aesKey);
+    const rawSize = data.length;
+    const rawMd5 = fileMd5(data);
+    const encrypted = aesEcbEncrypt(data, aesKey);
 
     let lastError: Error | undefined;
     for (
@@ -974,7 +1007,7 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
       try {
         const uploadUrlResp = await this.client.getUploadUrl({
           filekey,
-          mediaType: 1, // IMAGE
+          mediaType,
           toUserId,
           rawSize,
           rawFileMd5: rawMd5,
@@ -996,7 +1029,8 @@ export class WeChatAcpAdapter extends WeChatBaseAdapter {
 
         const encryptQueryParam = await this.client.uploadToCdn(
           cdnUrl,
-          encrypted
+          encrypted,
+          mediaType === UploadMediaType.IMAGE ? undefined : MEDIA_UPLOAD_TIMEOUT_MS,
         );
 
         return {

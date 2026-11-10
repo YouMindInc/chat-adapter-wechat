@@ -460,6 +460,21 @@ Both modes share a common base adapter (`WeChatBaseAdapter`) that handles:
 - AES-128-ECB media encryption/decryption
 - CDN upload/download
 
+## ACP outbound attachments
+
+ACP `postMessage` accepts image, video, and file attachments through the Chat SDK's
+`files` field. Videos use a `video/*` MIME type; other non-image attachments are sent
+as files with their filename and original byte length. Video and file CDN upload
+attempts have a 60-second timeout. Image upload behavior is unchanged.
+
+If attachment upload fails, `postMessage` rejects before sending the message. The
+error carries `wechatDeliveryStage: "upload"` so callers can distinguish upload
+failures from send failures. A stale-context-token retry reuses uploaded media.
+
+`stopTyping` sends the official stop status (`2`). These behaviors are implemented
+in SDK source; consumers do not need a compiled-media patch once they upgrade to
+the release containing this change.
+
 ## Contributing
 
 This project uses [changesets](https://github.com/changesets/changesets) for versioning. When making changes:
