@@ -1,5 +1,11 @@
 # chat-adapter-wechat
 
+## 0.3.5
+
+### Patch Changes
+
+- [#12](https://github.com/YouMindInc/chat-adapter-wechat/pull/12) [`913ec4a`](https://github.com/YouMindInc/chat-adapter-wechat/commit/913ec4a8a2302e255b80d6423a8afdd07858494b) Thanks [@cjl99](https://github.com/cjl99)! - 修复长期 ACP polling 的内存累积：显式转发父 signal 的取消，并在请求结束时移除监听，避免反复组合 AbortSignal.any 导致 Node 清理登记记录持续增长。保留请求 timeout 和取消原因。
+
 ## 0.3.4
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "chat-adapter-wechat",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "WeChat adapter for the Vercel Chat SDK",
   "type": "module",
   "main": "./dist/index.js",
