@@ -20,7 +20,12 @@ import type {
   IlinkUploadUrlResponse,
   IlinkMessageItem,
 } from "./acp-types.js";
-import { MessageType, MessageState, MessageItemType } from "./acp-types.js";
+import {
+  MessageType,
+  MessageState,
+  MessageItemType,
+  TypingStatus,
+} from "./acp-types.js";
 
 export interface IlinkClientConfig {
   baseUrl: string;
@@ -29,15 +34,23 @@ export interface IlinkClientConfig {
   logger?: ClientLogger;
 }
 
+export interface UploadedMedia {
+  encryptQueryParam: string;
+  aesKeyB64: string;
+  ciphertextSize: number;
+}
+
+export type UploadedAttachment = UploadedMedia & (
+  | { type: "video" }
+  | { type: "file"; filename: string; rawSize: number }
+);
+
 export interface SendMessageParams {
   toUserId: string;
   text?: string;
   contextToken?: string;
-  images?: Array<{
-    encryptQueryParam: string;
-    aesKeyB64: string;
-    ciphertextSize: number;
-  }>;
+  images?: UploadedMedia[];
+  media?: UploadedAttachment[];
 }
 
 export interface SendMessageResult {
@@ -242,6 +255,23 @@ export class IlinkClient {
       }
     }
 
+    for (const file of params.media ?? []) {
+      const media = {
+        encrypt_query_param: file.encryptQueryParam,
+        aes_key: file.aesKeyB64,
+        encrypt_type: 1,
+      };
+      items.push(file.type === "video"
+        ? {
+            type: MessageItemType.VIDEO,
+            video_item: { media, video_size: file.ciphertextSize },
+          }
+        : {
+            type: MessageItemType.FILE,
+            file_item: { media, file_name: file.filename, len: String(file.rawSize) },
+          });
+    }
+
     return {
       msg: {
         from_user_id: "",
@@ -319,7 +349,7 @@ export class IlinkClient {
   async sendTyping(
     userId: string,
     typingTicket: string,
-    status: 1 | 0 = 1
+    status: 0 | 1 | 2 = TypingStatus.START
   ): Promise<void> {
     await this.post("ilink/bot/sendtyping", {
       ilink_user_id: userId,
@@ -403,7 +433,8 @@ export class IlinkClient {
 
   async uploadToCdn(
     uploadUrl: string,
-    encryptedData: Buffer
+    encryptedData: Buffer,
+    timeoutMs?: number
   ): Promise<string> {
     const response = await fetch(uploadUrl, {
       method: "POST",
@@ -412,6 +443,7 @@ export class IlinkClient {
         "Content-Length": String(encryptedData.length),
       },
       body: new Uint8Array(encryptedData),
+      signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
     });
 
     if (response.status >= 400 && response.status < 500) {

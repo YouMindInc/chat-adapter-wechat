@@ -2,6 +2,9 @@
 
 export const MessageType = { USER: 1, BOT: 2 } as const;
 export const MessageState = { FINISH: 2 } as const;
+// 上传协议的类型值与消息 item 的类型值不同。
+export const UploadMediaType = { IMAGE: 1, VIDEO: 2, FILE: 3 } as const;
+export const TypingStatus = { START: 1, STOP: 2 } as const;
 export const MessageItemType = {
   TEXT: 1,
   IMAGE: 2,
