@@ -112,16 +112,21 @@ export class IlinkClient {
     const url = `${this.baseUrl}/${endpoint}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    const combinedSignal = signal
-      ? AbortSignal.any([signal, controller.signal])
-      : controller.signal;
+    // 长期父 signal 经 AbortSignal.any 反复组合，会在部分 Node 版本中累积回收登记记录。
+    // 显式转发取消，并在请求及 body 读取结束后解除监听。
+    const forwardAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) {
+      forwardAbort();
+    } else {
+      signal?.addEventListener("abort", forwardAbort, { once: true });
+    }
 
     try {
       const response = await fetch(url, {
         method: "POST",
         headers: this.buildHeaders(jsonBody),
         body: jsonBody,
-        signal: combinedSignal,
+        signal: controller.signal,
       });
 
       const text = await response.text();
@@ -184,6 +189,7 @@ export class IlinkClient {
       );
     } finally {
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", forwardAbort);
     }
   }
 
